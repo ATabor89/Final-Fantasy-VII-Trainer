@@ -1,0 +1,15 @@
+[package]
+name = "final_fantasy_vii_trainer"
+version = "0.1.0"
+authors = ["Aaron Tabor <Shoggoth269@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+winapi = { version = "0.3.8", features = ["winuser", "memoryapi", "impl-default", "errhandlingapi", "processthreadsapi", "tlhelp32", "handleapi", "psapi", "winerror", "securitybaseapi", "ntlsa"] }
+serde = { version = "1.0.111", features = ["derive"] }
+config = "0.10.1"
+lazy_static = "1.4.0"
+notify = "^4.0.0"
+#log = "0.4.8"
