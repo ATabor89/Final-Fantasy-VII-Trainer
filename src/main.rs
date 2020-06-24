@@ -34,6 +34,7 @@ struct MemoryState {
     gil: u32,
 }
 
+// TODO: The AP may actually be stored in a three-byte array, but two-bytes should be enough for most, if not all, of the game
 #[derive(Debug, Eq, PartialEq)]
 struct Enemy {
     ap_value: u16,
@@ -46,12 +47,11 @@ enum Message {
     Clear,
 }
 
-// TODO: Change to use floats to allow for more fine-grained multipliers
 #[derive(Serialize, Deserialize, Debug)]
 struct Settings {
-    experience_multiplier: u32,
-    ap_multiplier: u16,
-    gil_multiplier: u32,
+    experience_multiplier: f32,
+    ap_multiplier: f32,
+    gil_multiplier: f32,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -112,56 +112,20 @@ impl EnemyMemoryState {
         }
     }
 
-    // TODO: Modify to take in multipliers and remove clear_enemy_memory_state
-    // TODO: Change to use floats to allow for more fine-grained multipliers
     fn write_enemy_memory_state(
         &mut self,
         handle: *mut winapi::ctypes::c_void,
         module_base_address: *mut u8,
-    ) {
-        let settings = get_settings();
-
-        for exp in self.experience_value.iter_mut() {
-            *exp = exp.wrapping_mul(settings.experience_multiplier);
-        }
-        for ap in self.ap_value.iter_mut() {
-            *ap = ap.wrapping_mul(settings.ap_multiplier);
-        }
-        for gil in self.gil_value.iter_mut() {
-            *gil = gil.wrapping_mul(settings.gil_multiplier);
-        }
-
-        for (ap, offset) in self.ap_value.iter_mut().zip(AP_OFFSETS.iter()) {
-            write_process_memory(handle, module_base_address, *offset, ap);
-        }
-
-        for (exp, offset) in self
-            .experience_value
-            .iter_mut()
-            .zip(EXPERIENCE_OFFSETS.iter())
-        {
-            write_process_memory(handle, module_base_address, *offset, exp);
-        }
-
-        for (gil, offset) in self.experience_value.iter_mut().zip(GIL_OFFSETS.iter()) {
-            write_process_memory(handle, module_base_address, *offset, gil);
-        }
-    }
-
-    // TODO: Remove function after changing write_enemy_memory_state
-    fn clear_enemy_memory_state(
-        &mut self,
-        handle: *mut winapi::ctypes::c_void,
-        module_base_address: *mut u8,
+        (experience_multiplier, ap_multiplier, gil_multiplier): (f32, f32, f32),
     ) {
         for exp in self.experience_value.iter_mut() {
-            *exp = 0;
+            *exp = ((*exp as f32) * experience_multiplier) as u32;
         }
         for ap in self.ap_value.iter_mut() {
-            *ap = 0;
+            *ap = ((*ap as f32) * ap_multiplier) as u16;
         }
         for gil in self.gil_value.iter_mut() {
-            *gil = 0;
+            *gil = ((*gil as f32) * gil_multiplier) as u32;
         }
 
         for (ap, offset) in self.ap_value.iter_mut().zip(AP_OFFSETS.iter()) {
@@ -444,6 +408,9 @@ fn dw_get_module_base_address(dw_proc_id: u32, sz_module_name: &str) -> Result<*
     Ok(dw_module_base_address)
 }
 
+// TODO: Add error checking when reading memory values to ensure that we don't keep reading after the game is closed
+// This may involve checking the handle (Consider GetHandleInformation)
+// TODO: Modify logic to wait until it finds a handle and address rather than immediately exiting
 fn run_game_hacks(key_states_input: &Arc<Mutex<KeyStates>>) -> Result<(), String> {
     let (handle, proc_id) = get_process_handle_and_id("FINAL FANTASY VII")?;
     let module_base_address;
@@ -458,7 +425,7 @@ fn run_game_hacks(key_states_input: &Arc<Mutex<KeyStates>>) -> Result<(), String
     };
 
     let mut battle_monitor = false;
-    enemy_memory_state.clear_enemy_memory_state(handle, module_base_address);
+    enemy_memory_state.write_enemy_memory_state(handle, module_base_address, (0.0, 0.0, 0.0));
 
     let (tx, rx) = std::sync::mpsc::channel();
     let tx_thread = tx;
@@ -540,7 +507,9 @@ fn run_game_hacks(key_states_input: &Arc<Mutex<KeyStates>>) -> Result<(), String
         if battle_monitor {
             debug_print!("Writing enemy data.");
             debug_print!("Initial State: {:?}", enemy_memory_state);
-            enemy_memory_state.write_enemy_memory_state(handle, module_base_address);
+            // TODO: Determine if this is too slow
+            let settings = get_settings();
+            enemy_memory_state.write_enemy_memory_state(handle, module_base_address, (settings.experience_multiplier, settings.ap_multiplier, settings.gil_multiplier));
             debug_print!("Modified State: {:?}\n", enemy_memory_state);
 
             // Wait for clear message
@@ -548,7 +517,7 @@ fn run_game_hacks(key_states_input: &Arc<Mutex<KeyStates>>) -> Result<(), String
             let action = rx.recv().unwrap();
             match action {
                 Message::Clear => {
-                    enemy_memory_state.clear_enemy_memory_state(handle, module_base_address);
+                    enemy_memory_state.write_enemy_memory_state(handle, module_base_address, (0.0, 0.0, 0.0));
                     battle_monitor = false;
                 }
             }
