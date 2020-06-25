@@ -34,17 +34,29 @@ struct MemoryState {
     gil: u32,
 }
 
+impl MemoryState {
+    fn read_memory_state(
+        &mut self,
+        handle: *mut winapi::ctypes::c_void,
+        module_base_address: *mut u8,
+    ) {
+        read_process_memory(
+            handle,
+            module_base_address,
+            0x0059_E2C0,
+            &mut self.experience,
+        );
+        read_process_memory(handle, module_base_address, 0x0059_E2C4, &mut self.ap);
+        read_process_memory(handle, module_base_address, 0x0059_E2C8, &mut self.gil);
+    }
+}
+
 // TODO: The AP may actually be stored in a three-byte array, but two-bytes should be enough for most, if not all, of the game
 #[derive(Debug, Eq, PartialEq)]
 struct Enemy {
     ap_value: u16,
     experience_value: u32,
     gil_value: u32,
-}
-
-#[derive(Debug)]
-enum Message {
-    Clear,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -85,6 +97,8 @@ static EMPTY_ENEMY_MEMORY_STATE: EnemyMemoryState = EnemyMemoryState {
     gil_value: [0, 0, 0, 0, 0, 0],
 };
 
+// TODO: Add a get_totals() function so we can see what values we should see after battle
+// This should only be used in debug print statements
 impl EnemyMemoryState {
     fn is_zero(&self) -> bool {
         *self == EMPTY_ENEMY_MEMORY_STATE
@@ -145,7 +159,6 @@ impl EnemyMemoryState {
         }
     }
 }
-
 
 lazy_static! {
     static ref SETTINGS: RwLock<Config> = RwLock::new({
@@ -427,67 +440,16 @@ fn run_game_hacks(key_states_input: &Arc<Mutex<KeyStates>>) -> Result<(), String
     let mut battle_monitor = false;
     enemy_memory_state.write_enemy_memory_state(handle, module_base_address, (0.0, 0.0, 0.0));
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    let tx_thread = tx;
-
-    std::thread::spawn(move || -> Result<(), String> {
-        let (handle, proc_id) = get_process_handle_and_id("FINAL FANTASY VII")?;
-        let module_base_address;
-
-        module_base_address = dw_get_module_base_address(proc_id, "FF7_EN.exe")?;
-
-        let mut memory_state = MemoryState {
-            experience: 1,
-            ap: 1,
-            gil: 1,
-        };
-        let default_memory_state = MemoryState {
-            experience: 0,
-            ap: 0,
-            gil: 0,
-        };
-
-        let read_exp_ap_gil = |memory_state: &mut MemoryState| {
-            read_process_memory(
-                handle,
-                module_base_address,
-                0x0059_E2C0,
-                &mut memory_state.experience,
-            );
-            read_process_memory(
-                handle,
-                module_base_address,
-                0x0059_E2C4,
-                &mut memory_state.ap,
-            );
-            read_process_memory(
-                handle,
-                module_base_address,
-                0x0059_E2C8,
-                &mut memory_state.gil,
-            );
-        };
-
-        loop {
-            read_exp_ap_gil(&mut memory_state);
-
-            if memory_state == default_memory_state {
-                // Loop until the correct values are written
-                'battle_ending: loop {
-                    read_exp_ap_gil(&mut memory_state);
-
-                    // if memory_state is not 0s
-                    if memory_state != default_memory_state {
-                        std::thread::sleep(std::time::Duration::from_millis(6000));
-                        // Pass a message back to the calling thread to signify that it should clear values
-                        // TODO: Fix unwrap
-                        tx_thread.send(Message::Clear).unwrap();
-                        break 'battle_ending;
-                    }
-                }
-            }
-        }
-    });
+    let mut memory_state = MemoryState {
+        experience: 1,
+        ap: 1,
+        gil: 1,
+    };
+    let default_memory_state = MemoryState {
+        experience: 0,
+        ap: 0,
+        gil: 0,
+    };
 
     'outer: loop {
         {
@@ -507,21 +469,43 @@ fn run_game_hacks(key_states_input: &Arc<Mutex<KeyStates>>) -> Result<(), String
         if battle_monitor {
             debug_print!("Writing enemy data.");
             debug_print!("Initial State: {:?}", enemy_memory_state);
-            // TODO: Determine if this is too slow
             let settings = get_settings();
-            enemy_memory_state.write_enemy_memory_state(handle, module_base_address, (settings.experience_multiplier, settings.ap_multiplier, settings.gil_multiplier));
+            enemy_memory_state.write_enemy_memory_state(
+                handle,
+                module_base_address,
+                (
+                    settings.experience_multiplier,
+                    settings.ap_multiplier,
+                    settings.gil_multiplier,
+                ),
+            );
             debug_print!("Modified State: {:?}\n", enemy_memory_state);
 
             // Wait for clear message
-            // TODO: Fix unwrap
-            let action = rx.recv().unwrap();
-            match action {
-                Message::Clear => {
-                    enemy_memory_state.write_enemy_memory_state(handle, module_base_address, (0.0, 0.0, 0.0));
-                    battle_monitor = false;
-                }
-            }
-        }
+            'battle_ending: loop {
+                memory_state.read_memory_state(handle, module_base_address);
+
+                if memory_state == default_memory_state {
+                    // Loop until the correct values are written
+                    loop {
+                        memory_state.read_memory_state(handle, module_base_address);
+
+                        // if memory_state is not 0s
+                        if memory_state != default_memory_state {
+                            std::thread::sleep(std::time::Duration::from_millis(6000));
+                            // Clear memory state so we can monitor it for changes when we enter the next battle
+                            enemy_memory_state.write_enemy_memory_state(
+                                handle,
+                                module_base_address,
+                                (0.0, 0.0, 0.0),
+                            );
+                            battle_monitor = false;
+                            break 'battle_ending;
+                        } // end if memory_state != default_memory_state
+                    } // loop
+                } // end if memory_state == default_memory_state
+            } // 'battle_ending
+        } // end if battle_monitor
 
         std::thread::sleep(SLEEP_WHEN_WAITING);
     }
